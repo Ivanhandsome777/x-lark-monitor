@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    WEB_HOST=0.0.0.0
 
 WORKDIR /app
 COPY x_lark_bot.py /app/x_lark_bot.py

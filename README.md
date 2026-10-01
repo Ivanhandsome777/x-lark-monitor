@@ -122,4 +122,5 @@ docker compose up -d --force-recreate
 - 配置与 SQLite 去重数据保存在 `/var/data`，重新部署不会丢失。
 - 服务固定为单实例，避免同一推文重复采集和推送。
 - 应用自动读取 Render 的 `$PORT`，并通过 `/api/health` 接受健康检查。
+- Docker 镜像与 Render 环境都会自动监听 `0.0.0.0`；不要手动设置 `PORT`。
 - `X_PROXY_URL` 在 Render 上通常保持为空。

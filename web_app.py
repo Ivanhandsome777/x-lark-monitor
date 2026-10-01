@@ -29,11 +29,19 @@ ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", str(ROOT / "data" / "config.json")))
 STATE_DB = os.getenv("STATE_DB", str(ROOT / "data" / "monitor.db"))
-HOST = os.getenv("WEB_HOST", "127.0.0.1")
+IS_RENDER = os.getenv("RENDER", "").lower() in {"1", "true", "yes"} or bool(
+    os.getenv("RENDER_SERVICE_ID")
+)
+HOST = os.getenv("WEB_HOST", "0.0.0.0" if IS_RENDER else "127.0.0.1")
 PORT = int(os.getenv("PORT", os.getenv("WEB_PORT", "8787")))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
-REQUIRE_AUTH = os.getenv("REQUIRE_AUTH", "false").lower() in {"1", "true", "yes", "on"}
+REQUIRE_AUTH = os.getenv("REQUIRE_AUTH", "true" if IS_RENDER else "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 CSRF_TOKEN = secrets.token_urlsafe(24)
 
 
