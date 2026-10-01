@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>X → Lark Monitor</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="X Lark Monitor 首页">
+        <span class="brand-mark">X</span>
+        <span><strong>Lark Monitor</strong><small>实时竞对监测</small></span>
+      </a>
+      <nav aria-label="页面导航">
+        <a class="nav-item" data-route="feed" href="/"><span>◫</span>采集内容</a>
+        <a class="nav-item" data-route="settings" href="/settings"><span>⌁</span>账户与统计</a>
+      </nav>
+      <div class="privacy-note"><span class="lock">●</span><div><strong>仅在本机保存</strong><small>密钥不会显示在页面或日志中</small></div></div>
+    </aside>
+
+    <main id="top">
+      <section id="feed-page" class="app-page" data-page="feed">
+        <header class="topbar">
+          <div><p class="eyebrow">CONTENT FEED</p><h1>采集内容</h1><p>按采集时间倒序查看监控账号的新推文。</p></div>
+          <div id="status-pill-feed" class="status-pill is-stopped"><span></span><b>未运行</b></div>
+        </header>
+        <section class="status-strip feed-summary" aria-label="采集概览">
+          <div><small>今日采集</small><strong id="feed-today">0 条</strong></div>
+          <div><small>累计采集</small><strong id="feed-total">0 条</strong></div>
+          <div><small>Lark 推送</small><strong id="feed-delivered">0 条</strong></div>
+          <div><small>累计费用估算</small><strong id="feed-cost">$0.000</strong></div>
+        </section>
+        <section class="feed-toolbar" aria-label="内容筛选">
+          <div class="filter-group"><label for="feed-account">监控账号</label><select id="feed-account"><option value="">全部账号</option></select></div>
+          <button id="refresh-feed" class="button secondary" type="button">刷新内容</button>
+        </section>
+        <section id="content-feed" class="content-feed" aria-live="polite">
+          <div class="empty-state"><div class="empty-mark">X</div><h2>还没有采集内容</h2><p>配置监控账号并启动服务后，新推文会出现在这里。</p><a href="/settings" class="button primary route-link">前往账户管理</a></div>
+        </section>
+      </section>
+
+      <section id="settings-page" class="app-page" data-page="settings" hidden>
+        <header class="topbar">
+          <div><p class="eyebrow">CONTROL CENTER</p><h1>账户与统计</h1><p>管理跟踪账号、推送连接和采集策略。</p></div>
+          <div id="status-pill" class="status-pill is-stopped"><span></span><b>未运行</b></div>
+        </header>
+        <section class="status-strip" aria-label="运行概览">
+          <div><small>服务状态</small><strong id="status-text">等待配置</strong></div>
+          <div><small>监控账号</small><strong id="account-count">0 个</strong></div>
+          <div><small>运行模式</small><strong id="mode-display">实时流</strong></div>
+          <div><small>持续时间</small><strong id="uptime">—</strong></div>
+        </section>
+
+        <section class="metrics-grid" aria-label="费用统计">
+          <article class="metric-card primary-metric"><small>累计消耗估算</small><strong id="metric-total-cost">$0.000</strong><p>按已采集推文 × $0.005</p></article>
+          <article class="metric-card"><small>本月消耗估算</small><strong id="metric-month-cost">$0.000</strong><p><span id="metric-month-posts">0</span> 条推文读取</p></article>
+          <article class="metric-card"><small>待推送</small><strong id="metric-pending">0</strong><p>失败后会自动重试</p></article>
+        </section>
+        <section class="panel chart-panel">
+          <div class="panel-heading"><div><span class="step">01</span><h2>近 14 天采集量</h2></div><p>费用为本地估算，实际金额以 X Developer Console 为准。</p></div>
+          <div id="daily-chart" class="daily-chart" aria-label="近 14 天每日采集推文数量"></div>
+        </section>
+        <section class="panel account-stats-panel">
+          <div class="panel-heading"><div><span class="step">02</span><h2>跟踪账号统计</h2></div></div>
+          <div id="account-stats" class="account-stats"><p class="muted-line">暂无账号采集数据。</p></div>
+        </section>
+
+        <section id="config" class="panel">
+          <div class="panel-heading"><div><span class="step">03</span><h2>连接配置</h2></div><p>已保存的敏感字段仅显示末四位，留空表示保持不变。</p></div>
+          <form id="config-form" autocomplete="off">
+            <div class="form-grid">
+              <label class="field full"><span>X API Bearer Token <em>必填</em></span><span class="secret-input"><input id="bearer-token" name="bearer_token" type="password" placeholder="粘贴 X Developer Portal 的 Bearer Token"><button type="button" class="reveal" data-target="bearer-token" aria-label="显示或隐藏 Token">显示</button></span><small>用于调用 X API v2</small></label>
+              <label class="field full"><span>Lark Webhook <em>必填</em></span><span class="secret-input"><input id="lark-webhook" name="lark_webhook_url" type="password" placeholder="https://open.larksuite.com/open-apis/bot/v2/hook/..."><button type="button" class="reveal" data-target="lark-webhook" aria-label="显示或隐藏 Webhook">显示</button></span><small>在 Lark 群的自定义机器人设置中获取</small></label>
+              <label class="field full"><span>签名密钥 <i>选填</i></span><span class="secret-input"><input id="signing-secret" name="lark_signing_secret" type="password" placeholder="如果机器人开启了签名校验，请填写"><button type="button" class="reveal" data-target="signing-secret" aria-label="显示或隐藏密钥">显示</button></span><small>未开启签名校验时保持为空</small></label>
+              <label class="field full"><span>X API 网络代理 <i>本机无法直连时填写</i></span><span class="secret-input"><input id="proxy-url" name="proxy_url" type="password" placeholder="例如 http://127.0.0.1:7890"><button type="button" class="reveal" data-target="proxy-url" aria-label="显示或隐藏代理地址">显示</button></span><small>请填写 HTTP/HTTPS 代理地址；Python 标准库不直接支持 SOCKS 地址</small></label>
+            </div>
+            <hr>
+            <div class="panel-heading compact"><div><span class="step">04</span><h2>监控账号</h2></div><p>输入 X 用户名，不需要输入 @。</p></div>
+            <div class="account-editor">
+              <div id="account-list" class="account-list" aria-live="polite"></div>
+              <div class="add-account"><span>@</span><input id="account-input" type="text" maxlength="15" placeholder="username" aria-label="添加监控账号"><button id="add-account" type="button">添加账号</button></div>
+              <p id="account-error" class="error" role="alert"></p>
+            </div>
+            <hr>
+            <div class="panel-heading compact"><div><span class="step">05</span><h2>运行策略</h2></div></div>
+            <div class="strategy-grid">
+              <label class="mode-card"><input type="radio" name="mode" value="stream" checked><span><b>实时流</b><small>Filtered Stream，通常几秒内推送</small></span><span class="radio-dot"></span></label>
+              <label class="mode-card"><input type="radio" name="mode" value="poll"><span><b>定时轮询</b><small>适用于未开放 Stream 的 API 项目</small></span><span class="radio-dot"></span></label>
+            </div>
+            <div id="poll-settings" class="poll-settings" hidden><label class="field"><span>轮询间隔（秒）</span><input id="poll-interval" type="number" min="15" max="3600" value="60"></label></div>
+            <div class="toggle-row">
+              <label class="toggle"><input id="include-replies" type="checkbox"><span></span><b>包含回复</b></label>
+              <label class="toggle"><input id="include-retweets" type="checkbox"><span></span><b>包含转帖</b></label>
+              <label class="toggle"><input id="push-existing" type="checkbox"><span></span><b>首次推送历史帖</b></label>
+            </div>
+            <div id="form-message" class="form-message" role="status" aria-live="polite"></div>
+            <div class="actions">
+              <button id="save-start" class="button primary" type="submit">保存并启动</button>
+              <button id="test-lark" class="button secondary" type="button">测试 Lark</button>
+              <button id="stop-monitor" class="button danger" type="button" disabled>停止监控</button>
+            </div>
+          </form>
+        </section>
+        <section id="logs" class="panel log-panel">
+          <div class="panel-heading"><div><span class="step">06</span><h2>运行日志</h2></div><button id="clear-log-view" class="text-button" type="button">清空显示</button></div>
+          <div id="log-view" class="log-view" aria-live="polite"><p class="empty-log">服务启动后，日志会显示在这里。</p></div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

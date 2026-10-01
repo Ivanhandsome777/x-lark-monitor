@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: x-lark-monitor
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    numInstances: 1
+    healthCheckPath: /api/health
+    envVars:
+      - key: WEB_HOST
+        value: 0.0.0.0
+      - key: AUTO_START
+        value: "true"
+      - key: REQUIRE_AUTH
+        value: "true"
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: CONFIG_PATH
+        value: /var/data/config.json
+      - key: STATE_DB
+        value: /var/data/monitor.db
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    disk:
+      name: x-lark-monitor-data
+      mountPath: /var/data
+      sizeGB: 1

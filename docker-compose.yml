@@ -1,0 +1,15 @@
+services:
+  x-lark-bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8787
+      AUTO_START: "true"
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - x-lark-data:/app/data
+
+volumes:
+  x-lark-data:
