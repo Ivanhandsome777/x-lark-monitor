@@ -169,7 +169,10 @@ class XClient:
 
     def json_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         with self._request(method, path, **kwargs) as response:
-            return json.loads(response.read())
+            payload = json.loads(response.read())
+        if not isinstance(payload, dict):
+            raise ValueError(f"X API returned an unexpected {type(payload).__name__} payload")
+        return payload
 
     @staticmethod
     def query_for(config: Config) -> str:
@@ -242,14 +245,39 @@ class XClient:
 
 
 def normalize_many(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    users = {user["id"]: user for user in payload.get("includes", {}).get("users", [])}
-    media = {
-        item["media_key"]: item for item in payload.get("includes", {}).get("media", [])
+    if not isinstance(payload, dict):
+        raise ValueError("X payload must be a JSON object")
+    includes = payload.get("includes")
+    includes = includes if isinstance(includes, dict) else {}
+    raw_users = includes.get("users")
+    raw_users = raw_users if isinstance(raw_users, list) else []
+    users = {
+        user["id"]: user
+        for user in raw_users
+        if isinstance(user, dict) and "id" in user
     }
+    raw_media = includes.get("media")
+    raw_media = raw_media if isinstance(raw_media, list) else []
+    media = {
+        item["media_key"]: item
+        for item in raw_media
+        if isinstance(item, dict) and "media_key" in item
+    }
+    raw_data = payload.get("data")
+    if isinstance(raw_data, dict):
+        tweets = [raw_data]
+    elif isinstance(raw_data, list):
+        tweets = [tweet for tweet in raw_data if isinstance(tweet, dict)]
+    else:
+        tweets = []
     posts = []
-    for tweet in payload.get("data", []):
+    for tweet in tweets:
+        if "id" not in tweet:
+            continue
         author = users.get(tweet.get("author_id"), {})
-        keys = tweet.get("attachments", {}).get("media_keys", [])
+        attachments = tweet.get("attachments")
+        attachments = attachments if isinstance(attachments, dict) else {}
+        keys = attachments.get("media_keys", [])
         images = [
             media[key].get("url") or media[key].get("preview_image_url")
             for key in keys

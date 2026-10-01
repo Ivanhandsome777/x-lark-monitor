@@ -23,6 +23,17 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(post["url"], "https://x.com/OpenAI/status/123")
         self.assertEqual(post["text"], "hello")
 
+    def test_normalize_stream_single_post_object(self):
+        payload = {
+            "data": {"id": "456", "text": "streamed", "author_id": "2"},
+            "includes": {"users": [{"id": "2", "name": "Binance", "username": "binance"}]},
+            "matching_rules": [{"id": "1", "tag": "monitor"}],
+        }
+        posts = normalize_many(payload)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["id"], "456")
+        self.assertEqual(posts[0]["username"], "binance")
+
     def test_state_deduplicates(self):
         with tempfile.TemporaryDirectory() as directory:
             state = State(os.path.join(directory, "state.db"))
