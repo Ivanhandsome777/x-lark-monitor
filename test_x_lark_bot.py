@@ -1,12 +1,14 @@
+import json
 import os
 import tempfile
 import unittest
 import urllib.error
+from pathlib import Path
 from unittest.mock import patch
 
 import x_lark_bot
-from x_lark_bot import Config, State, XClient, lark_signature, normalize_many
-from web_app import basic_auth_valid, dashboard_data, default_config, public_config, validate_complete, validate_update
+from x_lark_bot import Config, State, XClient, deliver_pending, lark_signature, normalize_many
+from web_app import basic_auth_valid, dashboard_data, default_config, load_config, public_config, validate_complete, validate_update
 
 
 class MonitorTests(unittest.TestCase):
@@ -41,6 +43,49 @@ class MonitorTests(unittest.TestCase):
             self.assertTrue(state.save_post(post))
             self.assertFalse(state.save_post(post))
 
+    def test_delivery_retry_skips_webhook_that_already_succeeded(self):
+        class RecordingLark:
+            def __init__(self, should_fail=False):
+                self.should_fail = should_fail
+                self.calls = []
+
+            def send(self, post):
+                self.calls.append(post["id"])
+                if self.should_fail:
+                    raise RuntimeError("temporary Lark failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(os.path.join(directory, "state.db"))
+            state.save_post({"id": "101", "text": "hello", "username": "openai"})
+            first = RecordingLark()
+            second = RecordingLark(should_fail=True)
+            with self.assertRaises(RuntimeError):
+                deliver_pending(state, {"one": first, "two": second})
+            self.assertEqual(first.calls, ["101"])
+            self.assertEqual(second.calls, ["101"])
+
+            second.should_fail = False
+            deliver_pending(state, {"one": first, "two": second})
+            self.assertEqual(first.calls, ["101"])
+            self.assertEqual(second.calls, ["101", "101"])
+            self.assertEqual(list(state.pending()), [])
+
+    def test_new_webhook_does_not_receive_already_delivered_history(self):
+        class RecordingLark:
+            def __init__(self):
+                self.calls = []
+
+            def send(self, post):
+                self.calls.append(post["id"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(os.path.join(directory, "state.db"))
+            state.save_post({"id": "100", "text": "old", "username": "openai"})
+            state.mark_delivered("100")
+            new_target = RecordingLark()
+            deliver_pending(state, {"new-group": new_target})
+            self.assertEqual(new_target.calls, [])
+
     def test_config_normalizes_usernames(self):
         env = {
             "X_BEARER_TOKEN": " token ",
@@ -53,6 +98,22 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(config.usernames, ("openai", "x"))
         self.assertEqual(config.proxy_url, "http://127.0.0.1:7890")
 
+    def test_config_parses_multiple_enabled_webhooks(self):
+        env = {
+            "X_BEARER_TOKEN": "token",
+            "X_USERNAMES": "openai",
+            "LARK_WEBHOOKS_JSON": json.dumps(
+                [
+                    {"id": "one", "name": "群一", "url": "https://example.com/one", "enabled": True},
+                    {"id": "two", "name": "群二", "url": "https://example.com/two", "enabled": False},
+                    {"id": "three", "name": "群三", "url": "https://example.com/three", "enabled": True},
+                ]
+            ),
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = Config.from_env()
+        self.assertEqual([target.id for target in config.lark_webhooks], ["one", "three"])
+
     def test_signature_is_stable(self):
         self.assertEqual(lark_signature("secret", "123"), lark_signature("secret", "123"))
 
@@ -63,6 +124,59 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(visible["bearer_token_hint"], "••••cdef")
         self.assertNotIn("bearer_token", visible)
         self.assertNotIn("lark_webhook_url", visible)
+
+    def test_web_config_masks_every_webhook(self):
+        config = default_config()
+        config["webhooks"] = [
+            {
+                "id": "group-one",
+                "name": "行情群",
+                "url": "https://open.larksuite.com/open-apis/bot/v2/hook/super-secret-token",
+                "signing_secret": "signing-secret-value",
+                "enabled": True,
+            }
+        ]
+        encoded = json.dumps(public_config(config), ensure_ascii=False)
+        self.assertNotIn("super-secret-token", encoded)
+        self.assertNotIn("signing-secret-value", encoded)
+        self.assertIn("••••oken", encoded)
+
+    def test_web_update_manages_multiple_webhooks_and_keeps_masked_values(self):
+        previous = default_config()
+        previous["webhooks"] = [
+            {"id": "one", "name": "旧名称", "url": "https://example.com/one", "signing_secret": "secret", "enabled": True}
+        ]
+        updated = validate_update(
+            {
+                "webhooks": [
+                    {"id": "one", "name": "新名称", "url": "", "signing_secret": "", "enabled": False},
+                    {"id": "two", "name": "第二群", "url": "https://example.com/two", "signing_secret": "new-secret", "enabled": True},
+                ]
+            },
+            previous,
+        )
+        self.assertEqual(updated["webhooks"][0]["url"], "https://example.com/one")
+        self.assertEqual(updated["webhooks"][0]["signing_secret"], "secret")
+        self.assertFalse(updated["webhooks"][0]["enabled"])
+        self.assertEqual(updated["lark_webhook_url"], "https://example.com/two")
+
+    def test_load_config_migrates_legacy_webhook(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "lark_webhook_url": "https://example.com/legacy",
+                        "lark_signing_secret": "legacy-secret",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("web_app.CONFIG_PATH", path):
+                migrated = load_config()
+        self.assertEqual(len(migrated["webhooks"]), 1)
+        self.assertEqual(migrated["webhooks"][0]["name"], "默认 Lark 群")
+        self.assertEqual(migrated["webhooks"][0]["url"], "https://example.com/legacy")
 
     def test_web_update_normalizes_accounts(self):
         config = validate_update({"usernames": ["@OpenAI", "openai", "X"]}, default_config())

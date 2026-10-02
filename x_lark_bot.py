@@ -34,6 +34,14 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 @dataclass(frozen=True)
+class WebhookTarget:
+    id: str
+    name: str
+    url: str
+    signing_secret: str = ""
+
+
+@dataclass(frozen=True)
 class Config:
     bearer_token: str
     usernames: tuple[str, ...]
@@ -46,6 +54,7 @@ class Config:
     push_existing: bool
     state_db: str
     proxy_url: str = ""
+    lark_webhooks: tuple[WebhookTarget, ...] = ()
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -57,11 +66,39 @@ class Config:
             )
         )
         mode = os.getenv("X_MODE", "stream").strip().lower()
+        legacy_webhook = os.getenv("LARK_WEBHOOK_URL", "").strip()
+        legacy_secret = os.getenv("LARK_SIGNING_SECRET", "").strip()
+        targets = []
+        raw_targets = os.getenv("LARK_WEBHOOKS_JSON", "").strip()
+        if raw_targets:
+            try:
+                parsed_targets = json.loads(raw_targets)
+            except ValueError as exc:
+                raise ValueError("LARK_WEBHOOKS_JSON is not valid JSON") from exc
+            if not isinstance(parsed_targets, list):
+                raise ValueError("LARK_WEBHOOKS_JSON must be a list")
+            for index, item in enumerate(parsed_targets):
+                if not isinstance(item, dict) or item.get("enabled", True) is False:
+                    continue
+                url = str(item.get("url", "")).strip()
+                if not url:
+                    continue
+                target_id = str(item.get("id", "")).strip() or hashlib.sha256(url.encode()).hexdigest()[:12]
+                targets.append(
+                    WebhookTarget(
+                        id=target_id,
+                        name=str(item.get("name", "")).strip() or f"Lark Webhook {index + 1}",
+                        url=url,
+                        signing_secret=str(item.get("signing_secret", "")).strip(),
+                    )
+                )
+        if not targets and legacy_webhook:
+            targets.append(WebhookTarget("default", "默认 Lark 群", legacy_webhook, legacy_secret))
         cfg = cls(
             bearer_token=os.getenv("X_BEARER_TOKEN", "").strip(),
             usernames=usernames,
-            lark_webhook_url=os.getenv("LARK_WEBHOOK_URL", "").strip(),
-            lark_signing_secret=os.getenv("LARK_SIGNING_SECRET", "").strip(),
+            lark_webhook_url=legacy_webhook,
+            lark_signing_secret=legacy_secret,
             mode=mode,
             poll_interval=max(15, int(os.getenv("POLL_INTERVAL_SECONDS", "60"))),
             include_replies=env_bool("INCLUDE_REPLIES"),
@@ -69,14 +106,15 @@ class Config:
             push_existing=env_bool("PUSH_EXISTING"),
             state_db=os.getenv("STATE_DB", "data/monitor.db").strip(),
             proxy_url=os.getenv("X_PROXY_URL", "").strip(),
+            lark_webhooks=tuple(targets),
         )
         errors = []
         if not cfg.bearer_token:
             errors.append("X_BEARER_TOKEN")
         if not cfg.usernames:
             errors.append("X_USERNAMES")
-        if not cfg.lark_webhook_url:
-            errors.append("LARK_WEBHOOK_URL")
+        if not cfg.lark_webhooks:
+            errors.append("LARK_WEBHOOK_URL or LARK_WEBHOOKS_JSON")
         if cfg.mode not in {"stream", "poll"}:
             raise ValueError("X_MODE must be stream or poll")
         if errors:
@@ -101,6 +139,15 @@ class State:
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
+        self.db.execute(
+            """CREATE TABLE IF NOT EXISTS deliveries (
+                post_id TEXT NOT NULL,
+                webhook_id TEXT NOT NULL,
+                delivered INTEGER NOT NULL DEFAULT 0,
+                delivered_at TEXT,
+                PRIMARY KEY (post_id, webhook_id)
+            )"""
+        )
         self.db.commit()
 
     def save_post(self, post: dict[str, Any]) -> bool:
@@ -119,6 +166,26 @@ class State:
 
     def mark_delivered(self, post_id: str) -> None:
         self.db.execute("UPDATE posts SET delivered = 1 WHERE id = ?", (post_id,))
+        self.db.commit()
+
+    def webhook_delivered(self, post_id: str, webhook_id: str) -> bool:
+        row = self.db.execute(
+            "SELECT delivered FROM deliveries WHERE post_id = ? AND webhook_id = ?",
+            (post_id, webhook_id),
+        ).fetchone()
+        if row:
+            return bool(row[0])
+        legacy = self.db.execute("SELECT delivered FROM posts WHERE id = ?", (post_id,)).fetchone()
+        return bool(legacy and legacy[0])
+
+    def mark_webhook_delivered(self, post_id: str, webhook_id: str) -> None:
+        self.db.execute(
+            """INSERT INTO deliveries(post_id, webhook_id, delivered, delivered_at)
+               VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+               ON CONFLICT(post_id, webhook_id) DO UPDATE SET
+                 delivered = 1, delivered_at = CURRENT_TIMESTAMP""",
+            (post_id, webhook_id),
+        )
         self.db.commit()
 
     def get(self, key: str) -> str | None:
@@ -358,21 +425,30 @@ class LarkClient:
             raise RuntimeError(f"Lark rejected message: {result}")
 
 
-def deliver_pending(state: State, lark: LarkClient) -> None:
+def deliver_pending(state: State, larks: dict[str, LarkClient]) -> None:
     for post in state.pending():
-        lark.send(post)
+        for webhook_id, lark in larks.items():
+            if state.webhook_delivered(post["id"], webhook_id):
+                continue
+            lark.send(post)
+            state.mark_webhook_delivered(post["id"], webhook_id)
+            logging.info(
+                "Delivered @%s post %s to webhook %s",
+                post["username"],
+                post["id"],
+                webhook_id,
+            )
         state.mark_delivered(post["id"])
-        logging.info("Delivered @%s post %s", post["username"], post["id"])
 
 
-def handle_payload(payload: dict[str, Any], state: State, lark: LarkClient) -> None:
+def handle_payload(payload: dict[str, Any], state: State, larks: dict[str, LarkClient]) -> None:
     for post in normalize_many(payload):
         if state.save_post(post):
             logging.info("Found new @%s post %s", post["username"], post["id"])
-    deliver_pending(state, lark)
+    deliver_pending(state, larks)
 
 
-def run_stream(config: Config, state: State, x: XClient, lark: LarkClient) -> None:
+def run_stream(config: Config, state: State, x: XClient, larks: dict[str, LarkClient]) -> None:
     delay = 1.0
     rules_synced = False
     while not STOP:
@@ -381,10 +457,10 @@ def run_stream(config: Config, state: State, x: XClient, lark: LarkClient) -> No
                 logging.info("Syncing X filtered-stream rules")
                 x.sync_rules(config)
                 rules_synced = True
-            deliver_pending(state, lark)
+            deliver_pending(state, larks)
             logging.info("Connected to X filtered stream for: %s", ", ".join(config.usernames))
             for payload in x.stream():
-                handle_payload(payload, state, lark)
+                handle_payload(payload, state, larks)
                 delay = 1.0
         except (OSError, ValueError, RuntimeError, urllib.error.HTTPError) as exc:
             if STOP:
@@ -394,7 +470,7 @@ def run_stream(config: Config, state: State, x: XClient, lark: LarkClient) -> No
             delay = min(delay * 2, 120)
 
 
-def run_poll(config: Config, state: State, x: XClient, lark: LarkClient) -> None:
+def run_poll(config: Config, state: State, x: XClient, larks: dict[str, LarkClient]) -> None:
     metadata_key = "poll_since_id"
     while not STOP:
         try:
@@ -412,7 +488,7 @@ def run_poll(config: Config, state: State, x: XClient, lark: LarkClient) -> None
                     for post in sorted(posts, key=lambda item: int(item["id"])):
                         if state.save_post(post):
                             logging.info("Found new @%s post %s", post["username"], post["id"])
-                    deliver_pending(state, lark)
+                    deliver_pending(state, larks)
                 state.set(metadata_key, newest_id)
             elif since_id is None:
                 logging.info("No matching posts found during initial poll")
@@ -462,12 +538,15 @@ def main() -> int:
         return 2
     state = State(config.state_db)
     x = XClient(config.bearer_token, config.proxy_url)
-    lark = LarkClient(config.lark_webhook_url, config.lark_signing_secret)
+    larks = {
+        target.id: LarkClient(target.url, target.signing_secret)
+        for target in config.lark_webhooks
+    }
     logging.info("Starting in %s mode", config.mode)
     if config.mode == "stream":
-        run_stream(config, state, x, lark)
+        run_stream(config, state, x, larks)
     else:
-        run_poll(config, state, x, lark)
+        run_poll(config, state, x, larks)
     logging.info("Stopped")
     return 0
 

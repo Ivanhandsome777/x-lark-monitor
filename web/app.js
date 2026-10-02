@@ -1,4 +1,4 @@
-const state = { csrf: "", accounts: [], lastLogCount: 0, clearedAt: 0, route: "feed" };
+const state = { csrf: "", accounts: [], webhooks: [], lastLogCount: 0, clearedAt: 0, route: "feed" };
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -70,17 +70,168 @@ function addAccount() {
   input.focus();
 }
 
+function newWebhookId() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+  return `webhook-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function createSecretField({ value, placeholder, label, onInput }) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "secret-input";
+  const input = document.createElement("input");
+  input.type = "password";
+  input.value = value || "";
+  input.placeholder = placeholder;
+  input.setAttribute("aria-label", label);
+  input.addEventListener("input", () => onInput(input.value));
+  const reveal = document.createElement("button");
+  reveal.type = "button";
+  reveal.className = "reveal";
+  reveal.textContent = "显示";
+  reveal.addEventListener("click", () => {
+    input.type = input.type === "password" ? "text" : "password";
+    reveal.textContent = input.type === "password" ? "显示" : "隐藏";
+  });
+  wrapper.append(input, reveal);
+  return wrapper;
+}
+
+function renderWebhooks() {
+  const list = $("#webhook-list");
+  if (!state.webhooks.length) {
+    const empty = document.createElement("div");
+    empty.className = "webhook-empty";
+    empty.textContent = "还没有 Webhook，请添加一个 Lark 群机器人。";
+    list.replaceChildren(empty);
+    return;
+  }
+  list.replaceChildren(...state.webhooks.map((webhook, index) => {
+    const card = document.createElement("article");
+    card.className = `webhook-card${webhook.enabled ? "" : " is-disabled"}`;
+
+    const header = document.createElement("header");
+    const title = document.createElement("div");
+    title.className = "webhook-title";
+    const number = document.createElement("span");
+    number.textContent = String(index + 1).padStart(2, "0");
+    const name = document.createElement("input");
+    name.type = "text";
+    name.maxLength = 80;
+    name.value = webhook.name;
+    name.placeholder = `Lark 群 ${index + 1}`;
+    name.setAttribute("aria-label", `Webhook ${index + 1} 名称`);
+    name.addEventListener("input", () => { webhook.name = name.value; });
+    title.append(number, name);
+
+    const controls = document.createElement("div");
+    controls.className = "webhook-controls";
+    const enabled = document.createElement("label");
+    enabled.className = "toggle webhook-toggle";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = webhook.enabled;
+    checkbox.addEventListener("change", () => {
+      webhook.enabled = checkbox.checked;
+      renderWebhooks();
+    });
+    const switchTrack = document.createElement("span");
+    const switchLabel = document.createElement("b");
+    switchLabel.textContent = webhook.enabled ? "已启用" : "已停用";
+    enabled.append(checkbox, switchTrack, switchLabel);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "webhook-remove";
+    remove.textContent = "删除";
+    remove.setAttribute("aria-label", `删除 ${webhook.name || `Webhook ${index + 1}`}`);
+    remove.addEventListener("click", () => {
+      state.webhooks = state.webhooks.filter((item) => item.id !== webhook.id);
+      renderWebhooks();
+    });
+    controls.append(enabled, remove);
+    header.append(title, controls);
+
+    const fields = document.createElement("div");
+    fields.className = "webhook-fields";
+    const urlField = document.createElement("label");
+    urlField.className = "field full";
+    const urlLabel = document.createElement("span");
+    urlLabel.textContent = "Webhook 地址";
+    urlField.append(
+      urlLabel,
+      createSecretField({
+        value: webhook.url,
+        placeholder: webhook.has_url ? `已保存 ${webhook.url_hint}，留空保持不变` : "粘贴 Lark 自定义机器人的 Webhook URL",
+        label: `${webhook.name || "Webhook"} 地址`,
+        onInput: (value) => { webhook.url = value; },
+      }),
+    );
+    const secretField = document.createElement("label");
+    secretField.className = "field full";
+    const secretLabel = document.createElement("span");
+    secretLabel.textContent = "签名密钥（可选）";
+    secretField.append(
+      secretLabel,
+      createSecretField({
+        value: webhook.signing_secret,
+        placeholder: webhook.has_signing_secret ? `已保存 ${webhook.signing_secret_hint}，留空保持不变` : "启用签名校验时填写",
+        label: `${webhook.name || "Webhook"} 签名密钥`,
+        onInput: (value) => { webhook.signing_secret = value; },
+      }),
+    );
+    fields.append(urlField, secretField);
+
+    const footer = document.createElement("footer");
+    const hint = document.createElement("small");
+    hint.textContent = webhook.has_url ? `当前地址 ${webhook.url_hint}` : "尚未保存地址";
+    const test = document.createElement("button");
+    test.type = "button";
+    test.className = "button secondary webhook-test";
+    test.textContent = "测试此 Webhook";
+    test.addEventListener("click", async () => {
+      test.disabled = true;
+      try {
+        await api("/api/test-lark", {
+          method: "POST",
+          body: JSON.stringify({ webhook_id: webhook.id, url: webhook.url, signing_secret: webhook.signing_secret }),
+        });
+        toast(`“${webhook.name || `Webhook ${index + 1}`}”测试消息已发送`);
+      } catch (error) { toast(error.message, true); }
+      finally { test.disabled = false; }
+    });
+    footer.append(hint, test);
+    card.append(header, fields, footer);
+    return card;
+  }));
+}
+
+function addWebhook() {
+  state.webhooks.push({
+    id: newWebhookId(),
+    name: `Lark 群 ${state.webhooks.length + 1}`,
+    enabled: true,
+    has_url: false,
+    url_hint: "",
+    has_signing_secret: false,
+    signing_secret_hint: "",
+    url: "",
+    signing_secret: "",
+  });
+  renderWebhooks();
+  const cards = $$(".webhook-card");
+  cards[cards.length - 1]?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
 function applyConfig(config) {
   state.accounts = config.usernames || [];
+  state.webhooks = (config.webhooks || []).map((item) => ({ ...item, url: "", signing_secret: "" }));
   renderAccounts();
+  renderWebhooks();
   $(`input[name="mode"][value="${config.mode}"]`).checked = true;
   $("#poll-interval").value = config.poll_interval;
   $("#include-replies").checked = config.include_replies;
   $("#include-retweets").checked = config.include_retweets;
   $("#push-existing").checked = config.push_existing;
   if (config.has_bearer_token) $("#bearer-token").placeholder = `已保存 ${config.bearer_token_hint}，留空保持不变`;
-  if (config.has_lark_webhook) $("#lark-webhook").placeholder = `已保存 ${config.lark_webhook_hint}，留空保持不变`;
-  if (config.has_signing_secret) $("#signing-secret").placeholder = `已保存 ${config.signing_secret_hint}，留空保持不变`;
   if (config.has_proxy) $("#proxy-url").placeholder = `已保存 ${config.proxy_hint}，留空保持不变`;
   updateModeUI();
 }
@@ -94,8 +245,13 @@ function updateModeUI() {
 function configPayload() {
   return {
     bearer_token: $("#bearer-token").value,
-    lark_webhook_url: $("#lark-webhook").value,
-    lark_signing_secret: $("#signing-secret").value,
+    webhooks: state.webhooks.map((item) => ({
+      id: item.id,
+      name: item.name,
+      enabled: item.enabled,
+      url: item.url,
+      signing_secret: item.signing_secret,
+    })),
     proxy_url: $("#proxy-url").value,
     usernames: state.accounts,
     mode: $("input[name='mode']:checked").value,
@@ -297,6 +453,7 @@ async function initialize() {
 
 window.addEventListener("popstate", () => setRoute(location.pathname === "/settings" ? "settings" : "feed"));
 $("#add-account").addEventListener("click", addAccount);
+$("#add-webhook").addEventListener("click", addWebhook);
 $("#account-input").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addAccount(); } });
 $$('input[name="mode"]').forEach((input) => input.addEventListener("change", updateModeUI));
 $$('.reveal').forEach((button) => button.addEventListener("click", () => {
@@ -318,8 +475,6 @@ $("#config-form").addEventListener("submit", async (event) => {
     const saved = await api("/api/config", { method: "POST", body: JSON.stringify(configPayload()) });
     applyConfig(saved.config);
     $("#bearer-token").value = "";
-    $("#lark-webhook").value = "";
-    $("#signing-secret").value = "";
     $("#proxy-url").value = "";
     await api("/api/start", { method: "POST", body: "{}" });
     message.textContent = "配置已保存，监控服务已启动。";
@@ -338,16 +493,6 @@ $("#stop-monitor").addEventListener("click", async () => {
     toast("监控已停止");
     await refreshStatus();
   } catch (error) { toast(error.message, true); }
-});
-
-$("#test-lark").addEventListener("click", async () => {
-  const button = $("#test-lark");
-  button.disabled = true;
-  try {
-    await api("/api/test-lark", { method: "POST", body: JSON.stringify({ lark_webhook_url: $("#lark-webhook").value, lark_signing_secret: $("#signing-secret").value }) });
-    toast("测试消息已发送，请检查 Lark 群");
-  } catch (error) { toast(error.message, true); }
-  finally { button.disabled = false; }
 });
 
 $("#clear-log-view").addEventListener("click", async () => {

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import base64
+import hashlib
 from collections import deque
 from datetime import date, timedelta
 from http import HTTPStatus
@@ -51,6 +52,7 @@ def default_config() -> dict[str, Any]:
         "usernames": [],
         "lark_webhook_url": "",
         "lark_signing_secret": "",
+        "webhooks": [],
         "mode": "stream",
         "poll_interval": 60,
         "include_replies": False,
@@ -68,6 +70,38 @@ def load_config() -> dict[str, Any]:
             config.update({key: saved[key] for key in config if key in saved})
         except (OSError, ValueError, TypeError) as exc:
             logging.warning("Could not load config: %s", exc)
+    raw_webhooks = config.get("webhooks")
+    if not isinstance(raw_webhooks, list):
+        logging.warning("Ignoring invalid saved Webhook list")
+        raw_webhooks = []
+    normalized_webhooks = []
+    for index, item in enumerate(raw_webhooks):
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url", "")).strip()
+        if not url:
+            continue
+        normalized_webhooks.append(
+            {
+                "id": str(item.get("id", "")).strip()
+                or hashlib.sha256(url.encode()).hexdigest()[:12],
+                "name": str(item.get("name", "")).strip() or f"Lark 群 {index + 1}",
+                "url": url,
+                "signing_secret": str(item.get("signing_secret", "")).strip(),
+                "enabled": bool(item.get("enabled", True)),
+            }
+        )
+    config["webhooks"] = normalized_webhooks
+    if not config["webhooks"] and config["lark_webhook_url"]:
+        config["webhooks"] = [
+            {
+                "id": "legacy-" + hashlib.sha256(config["lark_webhook_url"].encode()).hexdigest()[:10],
+                "name": "默认 Lark 群",
+                "url": config["lark_webhook_url"],
+                "signing_secret": config["lark_signing_secret"],
+                "enabled": True,
+            }
+        ]
     return config
 
 
@@ -85,6 +119,19 @@ def public_config(config: dict[str, Any]) -> dict[str, Any]:
         "lark_webhook_hint": secret_hint(config["lark_webhook_url"]),
         "has_signing_secret": bool(config["lark_signing_secret"]),
         "signing_secret_hint": secret_hint(config["lark_signing_secret"]),
+        "webhooks": [
+            {
+                "id": item.get("id", ""),
+                "name": item.get("name", "Lark 群"),
+                "enabled": item.get("enabled", True),
+                "has_url": bool(item.get("url")),
+                "url_hint": secret_hint(item.get("url", "")),
+                "has_signing_secret": bool(item.get("signing_secret")),
+                "signing_secret_hint": secret_hint(item.get("signing_secret", "")),
+            }
+            for item in config.get("webhooks", [])
+            if isinstance(item, dict)
+        ],
         "has_proxy": bool(config["proxy_url"]),
         "proxy_hint": secret_hint(config["proxy_url"]),
     }
@@ -101,6 +148,48 @@ def validate_update(payload: dict[str, Any], previous: dict[str, Any]) -> dict[s
             value = str(payload[field]).strip()
             if value:
                 config[field] = value
+    if "webhooks" in payload:
+        raw_webhooks = payload["webhooks"]
+        if not isinstance(raw_webhooks, list):
+            raise ValueError("Webhook 列表格式不正确")
+        previous_by_id = {
+            str(item.get("id")): item
+            for item in previous.get("webhooks", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        webhooks = []
+        seen_ids = set()
+        for index, raw in enumerate(raw_webhooks):
+            if not isinstance(raw, dict):
+                raise ValueError("Webhook 配置格式不正确")
+            webhook_id = str(raw.get("id", "")).strip() or secrets.token_hex(8)
+            if webhook_id in seen_ids:
+                raise ValueError("Webhook ID 重复")
+            seen_ids.add(webhook_id)
+            old = previous_by_id.get(webhook_id, {})
+            name = str(raw.get("name", "")).strip() or f"Lark 群 {index + 1}"
+            url = str(raw.get("url", "")).strip() or str(old.get("url", "")).strip()
+            signing_secret = str(raw.get("signing_secret", "")).strip() or str(
+                old.get("signing_secret", "")
+            ).strip()
+            if not url:
+                raise ValueError(f"请填写 Webhook“{name}”的地址")
+            if not url.startswith("https://"):
+                raise ValueError(f"Webhook“{name}”必须使用 https:// 地址")
+            webhooks.append(
+                {
+                    "id": webhook_id,
+                    "name": name[:80],
+                    "url": url,
+                    "signing_secret": signing_secret,
+                    "enabled": bool(raw.get("enabled", True)),
+                }
+            )
+        config["webhooks"] = webhooks
+        if webhooks:
+            first = next((item for item in webhooks if item["enabled"]), webhooks[0])
+            config["lark_webhook_url"] = first["url"]
+            config["lark_signing_secret"] = first["signing_secret"]
     raw_names = payload.get("usernames", config["usernames"])
     if not isinstance(raw_names, list):
         raise ValueError("监控账号格式不正确")
@@ -129,8 +218,11 @@ def validate_complete(config: dict[str, Any]) -> None:
     missing = []
     if not config["bearer_token"]:
         missing.append("X API Bearer Token")
-    if not config["lark_webhook_url"]:
-        missing.append("Lark Webhook")
+    if not any(
+        isinstance(item, dict) and item.get("enabled") and item.get("url")
+        for item in config.get("webhooks", [])
+    ):
+        missing.append("至少一个已启用的 Lark Webhook")
     if not config["usernames"]:
         missing.append("至少一个监控账号")
     if missing:
@@ -189,6 +281,7 @@ class MonitorManager:
                     "X_USERNAMES": ",".join(config["usernames"]),
                     "LARK_WEBHOOK_URL": config["lark_webhook_url"],
                     "LARK_SIGNING_SECRET": config["lark_signing_secret"],
+                    "LARK_WEBHOOKS_JSON": json.dumps(config["webhooks"], ensure_ascii=False),
                     "X_MODE": config["mode"],
                     "POLL_INTERVAL_SECONDS": str(config["poll_interval"]),
                     "INCLUDE_REPLIES": str(config["include_replies"]).lower(),
@@ -476,8 +569,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/test-lark":
                 config = load_config()
                 payload = self.read_json()
-                webhook = str(payload.get("lark_webhook_url", "")).strip() or config["lark_webhook_url"]
-                signing_secret = str(payload.get("lark_signing_secret", "")).strip() or config["lark_signing_secret"]
+                webhook_id = str(payload.get("webhook_id", "")).strip()
+                saved = next(
+                    (item for item in config.get("webhooks", []) if item.get("id") == webhook_id),
+                    {},
+                )
+                webhook = str(payload.get("url", "")).strip() or str(saved.get("url", "")).strip()
+                signing_secret = str(payload.get("signing_secret", "")).strip() or str(
+                    saved.get("signing_secret", "")
+                ).strip()
                 if not webhook:
                     raise ValueError("请先填写 Lark Webhook")
                 LarkClient(webhook, signing_secret).send(

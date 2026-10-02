@@ -72,19 +72,21 @@
           <form id="config-form" autocomplete="off">
             <div class="form-grid">
               <label class="field full"><span>X API Bearer Token <em>必填</em></span><span class="secret-input"><input id="bearer-token" name="bearer_token" type="password" placeholder="粘贴 X Developer Portal 的 Bearer Token"><button type="button" class="reveal" data-target="bearer-token" aria-label="显示或隐藏 Token">显示</button></span><small>用于调用 X API v2</small></label>
-              <label class="field full"><span>Lark Webhook <em>必填</em></span><span class="secret-input"><input id="lark-webhook" name="lark_webhook_url" type="password" placeholder="https://open.larksuite.com/open-apis/bot/v2/hook/..."><button type="button" class="reveal" data-target="lark-webhook" aria-label="显示或隐藏 Webhook">显示</button></span><small>在 Lark 群的自定义机器人设置中获取</small></label>
-              <label class="field full"><span>签名密钥 <i>选填</i></span><span class="secret-input"><input id="signing-secret" name="lark_signing_secret" type="password" placeholder="如果机器人开启了签名校验，请填写"><button type="button" class="reveal" data-target="signing-secret" aria-label="显示或隐藏密钥">显示</button></span><small>未开启签名校验时保持为空</small></label>
               <label class="field full"><span>X API 网络代理 <i>本机无法直连时填写</i></span><span class="secret-input"><input id="proxy-url" name="proxy_url" type="password" placeholder="例如 http://127.0.0.1:7890"><button type="button" class="reveal" data-target="proxy-url" aria-label="显示或隐藏代理地址">显示</button></span><small>请填写 HTTP/HTTPS 代理地址；Python 标准库不直接支持 SOCKS 地址</small></label>
             </div>
             <hr>
-            <div class="panel-heading compact"><div><span class="step">04</span><h2>监控账号</h2></div><p>输入 X 用户名，不需要输入 @。</p></div>
+            <div class="panel-heading compact"><div><span class="step">04</span><h2>推送 Webhook</h2></div><p>一条推文会发送到所有已启用的 Webhook。</p></div>
+            <div id="webhook-list" class="webhook-list" aria-live="polite"></div>
+            <button id="add-webhook" class="button secondary add-webhook-button" type="button">＋ 添加 Webhook</button>
+            <hr>
+            <div class="panel-heading compact"><div><span class="step">05</span><h2>监控账号</h2></div><p>输入 X 用户名，不需要输入 @。</p></div>
             <div class="account-editor">
               <div id="account-list" class="account-list" aria-live="polite"></div>
               <div class="add-account"><span>@</span><input id="account-input" type="text" maxlength="15" placeholder="username" aria-label="添加监控账号"><button id="add-account" type="button">添加账号</button></div>
               <p id="account-error" class="error" role="alert"></p>
             </div>
             <hr>
-            <div class="panel-heading compact"><div><span class="step">05</span><h2>运行策略</h2></div></div>
+            <div class="panel-heading compact"><div><span class="step">06</span><h2>运行策略</h2></div></div>
             <div class="strategy-grid">
               <label class="mode-card"><input type="radio" name="mode" value="stream" checked><span><b>实时流</b><small>Filtered Stream，通常几秒内推送</small></span><span class="radio-dot"></span></label>
               <label class="mode-card"><input type="radio" name="mode" value="poll"><span><b>定时轮询</b><small>适用于未开放 Stream 的 API 项目</small></span><span class="radio-dot"></span></label>
@@ -98,13 +100,12 @@
             <div id="form-message" class="form-message" role="status" aria-live="polite"></div>
             <div class="actions">
               <button id="save-start" class="button primary" type="submit">保存并启动</button>
-              <button id="test-lark" class="button secondary" type="button">测试 Lark</button>
               <button id="stop-monitor" class="button danger" type="button" disabled>停止监控</button>
             </div>
           </form>
         </section>
         <section id="logs" class="panel log-panel">
-          <div class="panel-heading"><div><span class="step">06</span><h2>运行日志</h2></div><button id="clear-log-view" class="text-button" type="button">清空显示</button></div>
+          <div class="panel-heading"><div><span class="step">07</span><h2>运行日志</h2></div><button id="clear-log-view" class="text-button" type="button">清空显示</button></div>
           <div id="log-view" class="log-view" aria-live="polite"><p class="empty-log">服务启动后，日志会显示在这里。</p></div>
         </section>
       </section>
